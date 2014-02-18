@@ -10,13 +10,16 @@ all_years = [1992, 1996, 1998] + list(range(2000, datetime.date.today().year+1))
 
 # parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument('action', choices=['hash', 'backup-full', 'backup-incr', 'backup-ls', 'check', 'check-old-hash'])
-parser.add_argument('archive_dir', metavar='archive-dir')
+parser.add_argument('action', choices=[
+    'backup-full', 'backup-incr', 'backup-ls',
+    'hash', 'check', 'check-old-hash', 'sync'])
 parser.add_argument('year', nargs='+',
     type=lambda x: 'all' if x == 'all' else int(x),
     help='archive year to use (or "all" for all years)')
 parser.add_argument('-d', '--debug', action='store_true',
     help='print commands to be run without running them')
+parser.add_argument('-a', '--archive-dir', default=os.getcwd(),
+    help='the directory containing the archive (defaults to the current directory)')
 args = parser.parse_args()
 
 # helper functions
@@ -37,6 +40,15 @@ if not os.path.isdir(archive_dir):
     sys.exit('Error: archive directory "{}" not found'.format(archive_dir))
 
 passphrase_file     = os.path.join(archive_dir, 'passphrase.txt')
+if not os.path.isfile(passphrase_file):
+    sys.exit('Error: passphrase file "{}" not found'.format(passphrase_file))
+
+s3_config_file      = os.path.join(archive_dir, 's3cfg.txt')
+if not os.path.isfile(s3_config_file):
+    sys.exit('Error: s3 config file "{}" not found'.format(s3_config_file))
+
+s3_bucket           = open(os.path.join(archive_dir, 's3bucket.txt')).read().strip()
+
 duplicity_cache_dir = os.path.join(archive_dir, 'duplicity-cache')
 
 # determine years
@@ -90,20 +102,23 @@ for year in years:
         call('{} | diff "{}" -', stat_cmd, stat_file)
         
         call('hashdeep -r -a -vv -k "{}" "{}"', backup_hash_file, backup_year_dir)
-        os.environ['PASSPHRASE'] = open(passphrase_file).read()
+        os.environ['PASSPHRASE'] = open(passphrase_file).read().strip()
         call('duplicity verify {} {} "file://{}" "{}"', duplicity_args,
              include_args, backup_year_dir, archive_dir)
         call('duplicity collection-status {} "file://{}"', duplicity_args, backup_year_dir)
+        
+        call('out=$(s3cmd -c "{}" sync --dry-run --delete-removed --acl-private "{}/" "s3://{}/backup/{}/"); echo "$out"; test $(echo "$out" | wc -l) -eq 1', s3_config_file, backup_year_dir, s3_bucket, year)
     
     if args.action in ('backup-full', 'backup-incr'):
-        os.environ['PASSPHRASE'] = open(passphrase_file).read()
+        os.environ['PASSPHRASE'] = open(passphrase_file).read().strip()
         duplicity_action = 'full' if args.action == 'backup-full' else 'incr'
         call('duplicity {} {} {} "{}" "file://{}"', duplicity_action,
             duplicity_args, include_args, archive_dir, backup_year_dir)
         call('hashdeep -r "{}" > "{}"', backup_year_dir, backup_hash_file)
     
     if args.action == 'backup-ls':
-        os.environ['PASSPHRASE'] = open(passphrase_file).read()
+        os.environ['PASSPHRASE'] = open(passphrase_file).read().strip()
         call('duplicity list-current-files {} "file://{}"', duplicity_args, backup_year_dir)
         
-    
+    if args.action == 'sync':
+        call('s3cmd -c "{}" sync --delete-removed --acl-private "{}/" "s3://{}/backup/{}/"', s3_config_file, backup_year_dir, s3_bucket, year)
