@@ -49,6 +49,7 @@ for year in years:
     
     archive_year_dir = os.path.join(archive_dir, str(year))
     backup_year_dir  = os.path.join(archive_dir, 'backup', str(year))
+    backup_hash_file = os.path.join(archive_dir, 'backup', '{}-backup-hashdeep.txt'.format(year))
     hashdeep_file    = os.path.join(archive_dir, 'hash', '{}-hashdeep.txt'.format(year))
     stat_file        = os.path.join(archive_dir, 'hash', '{}-stat.csv'.format(year))
     hash_file_glob   = os.path.join(archive_dir, 'hash', '{}-*'.format(year))
@@ -88,6 +89,7 @@ for year in years:
             call('hashdeep -r -a -vv -k "{}" "{}"', hashdeep_file, archive_year_dir)
         call('{} | diff "{}" -', stat_cmd, stat_file)
         
+        call('hashdeep -r -a -vv -k "{}" "{}"', backup_hash_file, backup_year_dir)
         os.environ['PASSPHRASE'] = open(passphrase_file).read()
         call('duplicity verify {} {} "file://{}" "{}"', duplicity_args,
              include_args, backup_year_dir, archive_dir)
@@ -98,6 +100,7 @@ for year in years:
         duplicity_action = 'full' if args.action == 'backup-full' else 'incr'
         call('duplicity {} {} {} "{}" "file://{}"', duplicity_action,
             duplicity_args, include_args, archive_dir, backup_year_dir)
+        call('hashdeep -r "{}" > "{}"', backup_year_dir, backup_hash_file)
     
     if args.action == 'backup-ls':
         os.environ['PASSPHRASE'] = open(passphrase_file).read()
