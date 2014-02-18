@@ -51,7 +51,12 @@ for year in years:
     backup_year_dir  = os.path.join(archive_dir, 'backup', str(year))
     hashdeep_file    = os.path.join(archive_dir, 'hash', '{}-hashdeep.txt'.format(year))
     stat_file        = os.path.join(archive_dir, 'hash', '{}-stat.csv'.format(year))
-    stat_cmd         = 'find "{}" -print0 | sort -z | xargs -0 stat -c "%N,%F,%s,%f,%a,%A,%U,%G,%w (%W),%y (%Y),%z (%Z)"'.format(archive_year_dir)
+    hash_file_glob   = os.path.join(archive_dir, 'hash', '{}-*'.format(year))
+    stat_cmd         = 'find "{}" -print0 | sort -z | xargs -0 '.format(archive_year_dir) + \
+        'stat -c "%N,%F,%s,%f,%a,%A,%U,%G,%w (%W),%y (%Y),%z (%Z)"'
+    include_args     = '--include "{}" --include "{}" --exclude "/**"'.format(
+        archive_year_dir, hash_file_glob)
+    duplicity_args   = '--name "archive-{}" --archive-dir "{}"'.format(year, duplicity_cache_dir)
     
     if not os.path.isdir(archive_year_dir):
         sys.exit('Error: archive year "{}" not found'.format(archive_year_dir))
@@ -71,36 +76,31 @@ for year in years:
     
     if args.action == 'check-old-hash':
         if os.path.getsize(hashdeep_file + '.old') == 0:
-            call('test ! "$(ls -A "{}")"', archive_year_dir, exit_on_error = False)
+            call('test ! "$(ls -A "{}")"', archive_year_dir)
         else:
-            call('hashdeep -r -a -vv -k "{}" "{}"', hashdeep_file + '.old', archive_year_dir, exit_on_error = False)
+            call('hashdeep -r -a -vv -k "{}" "{}"', hashdeep_file + '.old', archive_year_dir)
         call('{} | diff "{}" -', stat_cmd, stat_file + '.old')
     
     if args.action == 'check':
         if os.path.getsize(hashdeep_file) == 0:
-            call('test ! "$(ls -A "{}")"', archive_year_dir, exit_on_error = False)
+            call('test ! "$(ls -A "{}")"', archive_year_dir)
         else:
-            call('hashdeep -r -a -vv -k "{}" "{}"', hashdeep_file, archive_year_dir, exit_on_error = False)
-        call('{} | diff "{}" -', stat_cmd, stat_file, exit_on_error = False)
+            call('hashdeep -r -a -vv -k "{}" "{}"', hashdeep_file, archive_year_dir)
+        call('{} | diff "{}" -', stat_cmd, stat_file)
         
         os.environ['PASSPHRASE'] = open(passphrase_file).read()
-        call('duplicity verify --name "archive-{}" --archive-dir "{}" "file://{}" "{}"',
-            year, duplicity_cache_dir, backup_year_dir, archive_year_dir)
-        call('duplicity collection-status --name "archive-{}" --archive-dir "{}" "file://{}"',
-            year, duplicity_cache_dir, backup_year_dir)
+        call('duplicity verify {} {} "file://{}" "{}"', duplicity_args,
+             include_args, backup_year_dir, archive_dir)
+        call('duplicity collection-status {} "file://{}"', duplicity_args, backup_year_dir)
     
     if args.action in ('backup-full', 'backup-incr'):
         os.environ['PASSPHRASE'] = open(passphrase_file).read()
         duplicity_action = 'full' if args.action == 'backup-full' else 'incr'
-        call('duplicity {} --name "archive-{}" --archive-dir "{}" ' +
-            '--include "{}" --include "{}" --exclude "/**" "{}" "file://{}"',
-            duplicity_action, year, duplicity_cache_dir, archive_year_dir,
-            os.path.join(archive_dir, 'hash', '{}-*'.format(year)),
-            archive_dir, backup_year_dir)
+        call('duplicity {} {} {} "{}" "file://{}"', duplicity_action,
+            duplicity_args, include_args, archive_dir, backup_year_dir)
     
     if args.action == 'backup-ls':
         os.environ['PASSPHRASE'] = open(passphrase_file).read()
-        call('duplicity list-current-files --name "archive-{}" --archive-dir "{}" "file://{}"',
-             year, duplicity_cache_dir, backup_year_dir)
+        call('duplicity list-current-files {} "file://{}"', duplicity_args, backup_year_dir)
         
     
