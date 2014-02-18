@@ -10,7 +10,7 @@ all_years = [1992, 1996, 1998] + list(range(2000, datetime.date.today().year+1))
 
 # parse arguments
 parser = argparse.ArgumentParser()
-parser.add_argument('action', choices=['hash', 'backup-full', 'backup-incr', 'check', 'check-old-hash'])
+parser.add_argument('action', choices=['hash', 'backup-full', 'backup-incr', 'backup-ls', 'check', 'check-old-hash'])
 parser.add_argument('archive_dir', metavar='archive-dir')
 parser.add_argument('year', nargs='+',
     type=lambda x: 'all' if x == 'all' else int(x),
@@ -49,8 +49,8 @@ for year in years:
     
     archive_year_dir = os.path.join(archive_dir, str(year))
     backup_year_dir  = os.path.join(archive_dir, 'backup', str(year))
-    hashdeep_file    = os.path.join(archive_dir, 'hash', 'hashdeep-{}.txt'.format(year))
-    stat_file        = os.path.join(archive_dir, 'hash', 'stat-{}.csv'.format(year))
+    hashdeep_file    = os.path.join(archive_dir, 'hash', '{}-hashdeep.txt'.format(year))
+    stat_file        = os.path.join(archive_dir, 'hash', '{}-stat.csv'.format(year))
     stat_cmd         = 'find "{}" -print0 | sort -z | xargs -0 stat -c "%N,%F,%s,%f,%a,%A,%U,%G,%w (%W),%y (%Y),%z (%Z)"'.format(archive_year_dir)
     
     if not os.path.isdir(archive_year_dir):
@@ -92,6 +92,15 @@ for year in years:
     if args.action in ('backup-full', 'backup-incr'):
         os.environ['PASSPHRASE'] = open(passphrase_file).read()
         duplicity_action = 'full' if args.action == 'backup-full' else 'incr'
-        call('duplicity {} --name "archive-{}" --archive-dir "{}" "{}" "file://{}"',
-            duplicity_action, year, duplicity_cache_dir, archive_year_dir, backup_year_dir)
-
+        call('duplicity {} --name "archive-{}" --archive-dir "{}" ' +
+            '--include "{}" --include "{}" --exclude "/**" "{}" "file://{}"',
+            duplicity_action, year, duplicity_cache_dir, archive_year_dir,
+            os.path.join(archive_dir, 'hash', '{}-*'.format(year)),
+            archive_dir, backup_year_dir)
+    
+    if args.action == 'backup-ls':
+        os.environ['PASSPHRASE'] = open(passphrase_file).read()
+        call('duplicity list-current-files --name "archive-{}" --archive-dir "{}" "file://{}"',
+             year, duplicity_cache_dir, backup_year_dir)
+        
+    
