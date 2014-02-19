@@ -18,7 +18,7 @@ parser.add_argument('year', nargs='+',
     help='archive year to use (or "all" for all years)')
 parser.add_argument('-d', '--debug', action='store_true',
     help='print commands to be run without running them')
-parser.add_argument('-a', '--archive-dir', default=os.getcwd(),
+parser.add_argument('-a', '--archive-dir', metavar='DIR', default=os.getcwd(),
     help='the directory containing the archive (defaults to the current directory)')
 args = parser.parse_args()
 
@@ -39,6 +39,7 @@ archive_dir = os.path.abspath(args.archive_dir)
 if not os.path.isdir(archive_dir):
     sys.exit('Error: archive directory "{}" not found'.format(archive_dir))
 
+# TODO check permissions on passphrase/s3 config
 passphrase_file     = os.path.join(archive_dir, 'passphrase.txt')
 if not os.path.isfile(passphrase_file):
     sys.exit('Error: passphrase file "{}" not found'.format(passphrase_file))
