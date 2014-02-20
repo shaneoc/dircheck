@@ -5,121 +5,155 @@ import subprocess
 import argparse
 import datetime
 
-# valid years
-all_years = [1992, 1996, 1998] + list(range(2000, datetime.date.today().year+1))
+class Config:
+    def __init__(self, actions):
+        # parse arguments
+        parser = argparse.ArgumentParser()
+        parser.add_argument('action', choices=actions)
+            #'backup-full', 'backup-incr', 'backup-ls',
+            #'hash', 'check', 'check-old-hash', 'sync'])
+        parser.add_argument('year', nargs='+',
+            type=lambda x: 'all' if x == 'all' else int(x),
+            help='archive year to use (or "all" for all years)')
+        parser.add_argument('-a', '--archive-dir', metavar='DIR', default=os.getcwd(),
+            help='the directory containing the archive (defaults to the current directory)')
+        parser.add_argument('-d', '--debug', action='store_true',
+            help='print commands to be run without running them')
+        args = parser.parse_args()
+        
+        self.action = args.action
+        self.debug  = args.debug
+        
+        # determine years
+        all_years = [1992, 1996, 1998] + list(range(2000, datetime.date.today().year+1))
+        years = all_years if any(year == 'all' for year in args.year) else args.year
+        if any(year not in all_years for year in years):
+            sys.exit('Error: invalid year')
+        
+        # determine paths
+        self.archive_dir = os.path.abspath(args.archive_dir)
+        
+        # TODO check permissions on everything
+        join = os.path.join
+        self.backup_dir          = join(self.archive_dir, 'backup')
+        self.duplicity_cache_dir = join(self.archive_dir, 'cache')
+        self.passphrase_file     = join(self.archive_dir, 'passphrase.txt')
+        self.s3_config_file      = join(self.archive_dir, 's3cfg.txt')
+        self.s3_bucket_file      = join(self.archive_dir, 's3bucket.txt')
+        
+        for d in (self.archive_dir, self.backup_dir):
+            if not os.path.isdir(d):
+                sys.exit('Error: directory "{}" does not exist or is not a directory'.format(d))
+        
+        for f in (self.passphrase_file, self.s3_config_file, self.s3_bucket_file):
+            if not os.path.isfile(f):
+                sys.exit('Error: file "{}" does not exist or is not a file'.format(f))
+        
+        self.passphrase = open(self.passphrase_file).read().strip()
+        self.s3_bucket  = open(self.s3_bucket_file).read().strip()
+        
+        class YearConfig:
+            def __init__(self, cfg, year):
+                self.year           = year
+                self.archive_dir    = join(cfg.archive_dir, str(year))
+                self.backup_dir     = join(cfg.backup_dir,  str(year))
+                self.duplicity_args = '--name "archive-{}" --archive-dir "{}"'.format(
+                    year, cfg.duplicity_cache_dir)
+                
+                if not os.path.isdir(self.archive_dir):
+                    sys.exit('Error: directory "{}" does not exist'.format(self.archive_dir))
+        
+        self.years = {year: YearConfig(self, year) for year in years}
 
-# parse arguments
-parser = argparse.ArgumentParser()
-parser.add_argument('action', choices=[
-    'backup-full', 'backup-incr', 'backup-ls',
-    'hash', 'check', 'check-old-hash', 'sync'])
-parser.add_argument('year', nargs='+',
-    type=lambda x: 'all' if x == 'all' else int(x),
-    help='archive year to use (or "all" for all years)')
-parser.add_argument('-d', '--debug', action='store_true',
-    help='print commands to be run without running them')
-parser.add_argument('-a', '--archive-dir', metavar='DIR', default=os.getcwd(),
-    help='the directory containing the archive (defaults to the current directory)')
-args = parser.parse_args()
-
-# helper functions
-def call(cmd, *pargs, **kwargs):
-    cmd = cmd.format(*pargs, **kwargs)
-    print('$ ' + cmd)
-    if args.debug:
-        print('command not run due to debug mode')
-    else:
-        sys.stdout.flush()
-        ret = subprocess.call(cmd, shell=True)
-        if ret != 0:
-            sys.exit('Error: command returned error code {}'.format(ret))
-
-# determine paths
-archive_dir = os.path.abspath(args.archive_dir)
-if not os.path.isdir(archive_dir):
-    sys.exit('Error: archive directory "{}" not found'.format(archive_dir))
-
-# TODO check permissions on passphrase/s3 config
-passphrase_file     = os.path.join(archive_dir, 'passphrase.txt')
-if not os.path.isfile(passphrase_file):
-    sys.exit('Error: passphrase file "{}" not found'.format(passphrase_file))
-
-s3_config_file      = os.path.join(archive_dir, 's3cfg.txt')
-if not os.path.isfile(s3_config_file):
-    sys.exit('Error: s3 config file "{}" not found'.format(s3_config_file))
-
-s3_bucket           = open(os.path.join(archive_dir, 's3bucket.txt')).read().strip()
-
-duplicity_cache_dir = os.path.join(archive_dir, 'duplicity-cache')
-
-# determine years
-years = all_years if any(year == 'all' for year in args.year) else args.year
-
-# do action
-for year in years:
-    if year not in all_years:
-        sys.exit('Error: archive year "{}" is invalid'.format(year))
+class Main:
+    def __init__(self):
+        self.error_occured = False
+        self.gcfg = Config(actions =
+            sorted(attr[:-7].replace('_','-') for attr in dir(self) if attr[-7:] == '_action'))
+        
+        for year in sorted(self.gcfg.years.keys()):
+            self.ycfg = self.gcfg.years[year]
+            getattr(self, self.gcfg.action + '_action')()
+            self._exiterror()
     
-    archive_year_dir = os.path.join(archive_dir, str(year))
-    backup_year_dir  = os.path.join(archive_dir, 'backup', str(year))
-    backup_hash_file = os.path.join(archive_dir, 'backup', '{}-backup-hashdeep.txt'.format(year))
-    hashdeep_file    = os.path.join(archive_dir, 'hash', '{}-hashdeep.txt'.format(year))
-    stat_file        = os.path.join(archive_dir, 'hash', '{}-stat.csv'.format(year))
-    hash_file_glob   = os.path.join(archive_dir, 'hash', '{}-*'.format(year))
-    stat_cmd         = 'find "{}" -print0 | sort -z | xargs -0 '.format(archive_year_dir) + \
-        'stat -c "%N,%F,%s,%f,%a,%A,%U,%G,%w (%W),%y (%Y),%z (%Z)"'
-    include_args     = '--include "{}" --include "{}" --exclude "/**"'.format(
-        archive_year_dir, hash_file_glob)
-    duplicity_args   = '--name "archive-{}" --archive-dir "{}"'.format(year, duplicity_cache_dir)
-    
-    if not os.path.isdir(archive_year_dir):
-        sys.exit('Error: archive year "{}" not found'.format(archive_year_dir))
-    
-    if args.action == 'hash':
-        if os.path.exists(hashdeep_file):
-            call('mv "{}" "{}"', hashdeep_file, hashdeep_file + '.old')
-        call('hashdeep -r "{}" > "{}"', archive_year_dir, hashdeep_file)
-        if os.path.exists(stat_file):
-            call('mv "{}" "{}"', stat_file, stat_file + '.old')
-        call('{} > "{}"', stat_cmd, stat_file)
-        print('-'*80)
-        print('NOTE: The hash for {} has been updated. You should now run check-old-hash'.format(year))
-        print('      to ensure that an additional file corruption has not occured while')
-        print('      updating the hash.')
-        print('-'*80)
-    
-    if args.action == 'check-old-hash':
-        if os.path.getsize(hashdeep_file + '.old') == 0:
-            call('test ! "$(ls -A "{}")"', archive_year_dir)
+    def _call(self, cmd, *pargs, **kwargs):
+        cmd = cmd.format(*pargs, **kwargs)
+        #self.output += '$ {}\n'.format(cmd)
+        print('$ ' + cmd)
+        if self.gcfg.debug:
+            #self.output += 'command not run due to debug mode\n'
+            print('command not run due to debug mode\n')
         else:
-            call('hashdeep -r -a -vv -k "{}" "{}"', hashdeep_file + '.old', archive_year_dir)
-        call('{} | diff "{}" -', stat_cmd, stat_file + '.old')
+            sys.stdout.flush()
+            ret = subprocess.call(cmd, shell=True)
+            if ret != 0:
+                print('Error: command returned error code {}'.format(ret), file=sys.stderr)
+                if 'exit_on_error' in kwargs and kwargs['exit_on_error']:
+                    sys.exit(1)
+                else:
+                    self.error_occured = True
+            #try:
+            #    self.output += subprocess.check_output(cmd, universal_newlines=True,
+            #        stderr=subprocess.STDOUT, shell=True).rtrim() + '\n'
+            #except subprocess.CalledProcessError as e:
+            #    self.output += e.output.rtrim() + '\n'
+            #    self.output += 'Error: command returned error code {}'.format(e.returncode)
+            #    self.error = True
     
-    if args.action == 'check':
-        if os.path.getsize(hashdeep_file) == 0:
-            call('test ! "$(ls -A "{}")"', archive_year_dir)
-        else:
-            call('hashdeep -r -a -vv -k "{}" "{}"', hashdeep_file, archive_year_dir)
-        call('{} | diff "{}" -', stat_cmd, stat_file)
-        
-        call('hashdeep -r -a -vv -k "{}" "{}"', backup_hash_file, backup_year_dir)
-        os.environ['PASSPHRASE'] = open(passphrase_file).read().strip()
-        call('duplicity verify {} {} "file://{}" "{}"', duplicity_args,
-             include_args, backup_year_dir, archive_dir)
-        call('duplicity collection-status {} "file://{}"', duplicity_args, backup_year_dir)
-        
-        call('out=$(s3cmd -c "{}" sync --dry-run --delete-removed --acl-private "{}/" "s3://{}/backup/{}/"); echo "$out"; test $(echo "$out" | wc -l) -eq 1', s3_config_file, backup_year_dir, s3_bucket, year)
+    def _exitcall(self, cmd, *pargs, **kwargs):
+        kwargs['exit_on_error'] = True
+        self._call(cmd, *pargs, **kwargs)
     
-    if args.action in ('backup-full', 'backup-incr'):
-        os.environ['PASSPHRASE'] = open(passphrase_file).read().strip()
-        duplicity_action = 'full' if args.action == 'backup-full' else 'incr'
-        call('duplicity {} {} {} "{}" "file://{}"', duplicity_action,
-            duplicity_args, include_args, archive_dir, backup_year_dir)
-        call('hashdeep -r "{}" > "{}"', backup_year_dir, backup_hash_file)
+    def _exiterror(self):
+        if self.error_occured:
+            sys.exit('Error: exiting due to previous error')
     
-    if args.action == 'backup-ls':
-        os.environ['PASSPHRASE'] = open(passphrase_file).read().strip()
-        call('duplicity list-current-files {} "file://{}"', duplicity_args, backup_year_dir)
+    def hash_action(self):
+        self._exitcall('dircheck.py hash "{}"', self.ycfg.archive_dir)
+    
+    def check_hash_action(self):
+        self._call('dircheck.py check "{}"', self.ycfg.archive_dir)
+    
+    def backup_full_action(self):
+        self._backup('full')
+    
+    def backup_incr_action(self):
+        self._backup('incr')
+    
+    def _backup(self, backup_type):
+        assert backup_type in ('full', 'incr')
+        os.environ['PASSPHRASE'] = self.gcfg.passphrase
+        self._exitcall('duplicity {} {} "{}" "file://{}"', backup_type,
+            self.ycfg.duplicity_args, self.ycfg.archive_dir, self.ycfg.backup_dir)
+        os.environ['PASSPHRASE'] = ''
         
-    if args.action == 'sync':
-        call('s3cmd -c "{}" sync --delete-removed --acl-private "{}/" "s3://{}/backup/{}/"', s3_config_file, backup_year_dir, s3_bucket, year)
+        # TODO hash the backup with dircheck.py
+    
+    def backup_ls_action(self):
+        os.environ['PASSPHRASE'] = self.gcfg.passphrase
+        self._exitcall('duplicity list-current-files {} "file://{}"',
+            self.ycfg.duplicity_args, self.ycfg.archive_dir)
+        os.environ['PASSPHRASE'] = ''
+    
+    def check_backup_action(self):
+        os.environ['PASSPHRASE'] = self.gcfg.passphrase
+        self._call('duplicity verify {} "file://{}" "{}"',
+            self.ycfg.duplicity_args, self.ycfg.backup_dir, self.ycfg.archive_dir)
+        #cmd.call('duplicity collection-status {} "file://{}"', duplicity_args, backup_year_dir)
+        os.environ['PASSPHRASE'] = ''
+    
+    def sync_action(self):
+        self._exitcall('s3cmd -c "{}" sync --delete-removed --acl-private "{}/" "s3://{}/backup/{}/"',
+            self.gcfg.s3_config_file, self.ycfg.backup_dir, self.gcfg.s3_bucket, self.ycfg.year)
+    
+    def check_sync_action(self):
+        self._exitcall('out=$(s3cmd -c "{}" sync --dry-run --delete-removed --acl-private "{}/" "s3://{}/backup/{}/"); echo "$out"; test $(echo "$out" | wc -l) -eq 1',
+            self.gcfg.s3_config_file, self.ycfg.backup_dir, self.gcfg.s3_bucket, self.ycfg.year)
+        
+    def check_action(self):
+        self.check_hash_action()
+        self.check_backup_action()
+        self.check_sync_action()
+
+if __name__ == '__main__':
+    Main()
