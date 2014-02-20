@@ -6,18 +6,23 @@ import argparse
 import subprocess
 import stat
 import csv
+import datetime
 
 csv_fieldorder = [
     'filename',
     'type',
+    'mtime',
+    'link',
     'size',
     'md5',
-    'sha256' # TODO check more things
+    'sha256'
 ]
 
 csv_fieldnames = {
     'filename': 'filename',
     'type':     'type',
+    'mtime':    'mtime',
+    'link':     'symbolic link target',
     'size':     'size (bytes)',
     'md5':      'md5 sum',
     'sha256':   'sha256 sum'
@@ -78,11 +83,19 @@ class Main:
         elif stat.S_ISSOCK(s.st_mode): type = 'sock'
         else: sys.exit('Error: file {} is of unknown type'.format(filename))
         
-        md5sum    = self.hash_file(filename, 'md5')    if type == 'file' else ''
-        sha256sum = self.hash_file(filename, 'sha256') if type == 'file' else ''
+        link_target = os.readlink(filename)              if type == 'lnk'  else ''
+        md5sum      = self.hash_file(filename, 'md5')    if type == 'file' else ''
+        sha256sum   = self.hash_file(filename, 'sha256') if type == 'file' else ''
         
         return {'filename': relfilename,
                 'type':     type,
+                # TODO should I save these other things?
+                #'mode':     oct(stat.S_IMODE(s.st_mode)),
+                #'uid':      str(s.st_uid),
+                #'gid':      str(s.st_gid),
+                'mtime':    str(s.st_mtime_ns),
+                #'ctime':    str(s.st_ctime_ns),
+                'link':     link_target,
                 'size':     str(s.st_size),
                 'md5':      md5sum,
                 'sha256':   sha256sum}
@@ -115,7 +128,8 @@ class Main:
                 self.csv_file)
         
         with open(self.csv_file, newline='') as f:
-            reader = csv.DictReader(f, csv_fieldorder)
+            # TODO maybe change this to obey the header line in the CSV?
+            reader = csv.DictReader(f, csv_fieldorder, restval='')
             first = True
             csv_db = []
             for row in reader:
@@ -125,6 +139,7 @@ class Main:
         
         error_occured = False
         def stderr(msg):
+            nonlocal error_occured
             print(msg, file=sys.stderr)
             error_occured = True
         
@@ -154,10 +169,24 @@ class Main:
                 scan_file['filename'])
             for field in csv_fieldorder:
                 if scan_file[field] != csv_file[field]:
+                    def tstamp(val):
+                        try:
+                            return '{}.{:09} ({})'.format(
+                                datetime.datetime.fromtimestamp(int(val) // (10**9)).isoformat(' '),
+                                int(val) % (10**9), val)
+                        except (ValueError, OSError):
+                            return 'invalid timestamp ({})'.format(val)
+                    
+                    if csv_file[field] == '':  old_val = 'none'
+                    elif field == 'mtime':     old_val = tstamp(csv_file[field])
+                    else:                      old_val = csv_file[field]
+                    
+                    if scan_file[field] == '': new_val = 'none'
+                    elif field == 'mtime':     new_val = tstamp(scan_file[field])
+                    else:                      new_val = scan_file[field]
+                    
                     stderr('  {}: {} changed to {}'.format(
-                        csv_fieldnames[field],
-                        csv_file[field]  if csv_file[field]  != '' else 'N/A',
-                        scan_file[field] if scan_file[field] != '' else 'N/A'))
+                        csv_fieldnames[field], old_val, new_val))
             scan_idx += 1
             csv_idx  += 1
         
@@ -168,7 +197,5 @@ class Main:
                 len(csv_db), sum(int(csv_file['size']) for csv_file in csv_db)))
 
 
-
-
 if __name__ == '__main__':
-    Main()        
+    Main()
