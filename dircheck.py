@@ -7,6 +7,7 @@ import subprocess
 import stat
 import csv
 import datetime
+import io
 
 csv_fieldnames = [
     'filename',
@@ -116,18 +117,51 @@ class Main:
                 filename, e.returncode))
     
     def hash_action(self):
-        print(' * Generating hash file...')
-        # TODO implement ability to update hashes without the possibly
-        #      of unnoticed data corruption while updating
+        if os.path.exists(self.csv_file):
+            msgs = [' * Check these mismatches:\n']
+            # TODO send messages to less as they happen rather than
+            #      buffer them up first
+            #      https://gist.github.com/waylan/2353749
+            def msgfunc(msg):
+                msgs.append(msg + '\n')
+            self.compare_csv(msgfunc)
+        
+            if len(msgs) > 1:
+                p = subprocess.Popen(['/usr/bin/less', '-S'], stdin=subprocess.PIPE, universal_newlines=True)
+                p.communicate(''.join(msgs))
+                if input(' * Accept hash changes and update? [y/N] ') != 'y':
+                    sys.exit()
+            
+            print(' * Generating new hash file...')
+        else:
+            print(' * Generating hash file...')
+        
         with open(self.csv_file, 'w', newline='') as f:
             writer = csv.DictWriter(f, csv_fieldnames)
             writer.writerow({field: field for field in csv_fieldnames})
             for fileinfo in self.scan_db:
                 writer.writerow(fileinfo)
+        
         print(' * Successfully hashed {} files ({} bytes)'.format(
             len(self.scan_db), self.scan_data_size))
     
     def check_action(self):
+        error_occured = False
+        def msgfunc(msg):
+            nonlocal error_occured
+            error_occured = True
+            print(msg) # TODO should this be stderr??
+        
+        self.compare_csv(msgfunc)
+        
+        if error_occured:
+            sys.exit(1)
+        else:
+            print(' * Successfully compared {} files ({} bytes), no mismatches'.format(
+                len(self.scan_db), self.scan_data_size))
+        
+        
+    def compare_csv(self, msgfunc):
         print(' * Comparing to hash file...')
         if not os.path.isfile(self.csv_file):
             sys.exit('Error: hash file either does exist or is not a file: ' + \
@@ -139,12 +173,6 @@ class Main:
                 sys.exit('Error: hash file is missing a filename field')
             csv_db = [row for row in reader]
             csv_db.sort(key = lambda x: x['filename'])
-        
-        error_occured = False
-        def stderr(msg):
-            nonlocal error_occured
-            print(msg, file=sys.stderr)
-            error_occured = True
         
         scan_idx = csv_idx = 0
         while scan_idx < len(self.scan_db) or csv_idx < len(csv_db):
@@ -162,19 +190,19 @@ class Main:
                     sys.exit('Error: hash file has duplicate entries for file: ' + csv_file['filename'])
             
                 if scan_file == None or csv_file['filename'] < scan_file['filename']:
-                    stderr('Mismatch: file is missing from disk: ' + \
+                    msgfunc('Mismatch: file is missing from disk: ' + \
                         csv_file['filename'])
                     csv_idx += 1
                     continue
             
             if scan_file != None:
                 if csv_file == None or scan_file['filename'] < csv_file['filename']:
-                    stderr('Mismatch: file is missing from the hash file: ' + \
+                    msgfunc('Mismatch: file is missing from the hash file: ' + \
                         scan_file['filename'])
                     scan_idx += 1
                     continue
             
-            stderr('Mismatch: file properties have changed: ' + \
+            msgfunc('Mismatch: file properties have changed: ' + \
                 scan_file['filename'])
             for field in scan_file:
                 scan_val = scan_file.get(field, '')
@@ -196,16 +224,10 @@ class Main:
                     elif field == 'mtime': new_val = tstamp(scan_val)
                     else:                  new_val = scan_val
                     
-                    stderr('  {}: {} changed to {}'.format(
+                    msgfunc('  {}: {} changed to {}'.format(
                         csv_humanfieldnames[field], old_val, new_val))
             scan_idx += 1
             csv_idx  += 1
-        
-        if error_occured:
-            sys.exit(1)
-        else:
-            print(' * Successfully compared {} files ({} bytes), no mismatches'.format(
-                len(self.scan_db), self.scan_data_size))
 
 
 if __name__ == '__main__':
