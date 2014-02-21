@@ -8,6 +8,7 @@ import stat
 import csv
 import datetime
 import io
+import hashlib
 
 csv_fieldnames = [
     'filename',
@@ -28,6 +29,10 @@ csv_humanfieldnames = {
     'md5':      'md5 sum',
     'sha256':   'sha256 sum'
 }
+
+# preallocate a single buffer for hashing, for speed
+hashbuf     = bytearray(1048576) # 1 MB
+hashbufview = memoryview(hashbuf)
 
 class Main:
     def __init__(self):
@@ -106,19 +111,18 @@ class Main:
     
     def hash_file(self, filename, hash_type):
         assert hash_type in ('md5', 'sha256')
-        hashsum_bin = '/usr/bin/{}sum'.format(hash_type)
-        try:
-            output = subprocess.check_output(
-                [hashsum_bin, '-b', filename],
-                universal_newlines=True)
-            return output.split()[0]
-        except subprocess.CalledProcessError as e:
-            sys.exit('Error: failed hashing file {} (return code: {})'.format(
-                filename, e.returncode))
+        h = hashlib.md5() if hash_type == 'md5' else hashlib.sha256()
+        
+        with open(filename, 'rb', buffering=0) as f:
+            while True:
+                size = f.readinto(hashbuf)
+                if size == 0: break
+                h.update(hashbufview[:size])
+        return h.hexdigest()
     
     def hash_action(self):
         if os.path.exists(self.csv_file):
-            msgs = [' * Check these mismatches:\n']
+            msgs = [' * Mismatches from existing hash file found:\n' + ('-'*80) + '\n']
             # TODO send messages to less as they happen rather than
             #      buffer them up first
             #      https://gist.github.com/waylan/2353749
@@ -131,6 +135,8 @@ class Main:
                 p.communicate(''.join(msgs))
                 if input(' * Accept hash changes and update? [y/N] ') != 'y':
                     sys.exit()
+            else:
+                print(' * No changes detected from previous hash file!')
             
             print(' * Generating new hash file...')
         else:
