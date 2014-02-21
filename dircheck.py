@@ -8,7 +8,7 @@ import stat
 import csv
 import datetime
 
-csv_fieldorder = [
+csv_fieldnames = [
     'filename',
     'type',
     'mtime',
@@ -18,7 +18,7 @@ csv_fieldorder = [
     'sha256'
 ]
 
-csv_fieldnames = {
+csv_humanfieldnames = {
     'filename': 'filename',
     'type':     'type',
     'mtime':    'mtime',
@@ -48,6 +48,7 @@ class Main:
         print('Directory: ' + self.data_dir)
         print('Hash file: ' + self.csv_file)
         
+        self.scan_data_size = 0
         self.scan_db = []
         print(' * Scanning...')
         self.scan_dir(self.data_dir)
@@ -72,8 +73,6 @@ class Main:
 
     def scan_file(self, filename):
         s = os.lstat(filename)
-        relfilename = os.path.relpath(filename, start=self.data_dir)
-        
         if   stat.S_ISDIR(s.st_mode):  type = 'dir'
         elif stat.S_ISCHR(s.st_mode):  type = 'chr'
         elif stat.S_ISBLK(s.st_mode):  type = 'blk'
@@ -83,9 +82,13 @@ class Main:
         elif stat.S_ISSOCK(s.st_mode): type = 'sock'
         else: sys.exit('Error: file {} is of unknown type'.format(filename))
         
+        relfilename = os.path.relpath(filename, start=self.data_dir)
+        if type == 'dir': relfilename += '/' # it looks nicer this way!
         link_target = os.readlink(filename)              if type == 'lnk'  else ''
         md5sum      = self.hash_file(filename, 'md5')    if type == 'file' else ''
         sha256sum   = self.hash_file(filename, 'sha256') if type == 'file' else ''
+        
+        self.scan_data_size += s.st_size
         
         return {'filename': relfilename,
                 'type':     type,
@@ -113,13 +116,16 @@ class Main:
                 filename, e.returncode))
     
     def hash_action(self):
+        print(' * Generating hash file...')
         # TODO implement ability to update hashes without the possibly
         #      of unnoticed data corruption while updating
         with open(self.csv_file, 'w', newline='') as f:
-            writer = csv.DictWriter(f, csv_fieldorder)
-            writer.writerow(csv_fieldnames)
+            writer = csv.DictWriter(f, csv_fieldnames)
+            writer.writerow({field: field for field in csv_fieldnames})
             for fileinfo in self.scan_db:
                 writer.writerow(fileinfo)
+        print(' * Successfully hashed {} files ({} bytes)'.format(
+            len(self.scan_db), self.scan_data_size))
     
     def check_action(self):
         print(' * Comparing to hash file...')
@@ -128,13 +134,10 @@ class Main:
                 self.csv_file)
         
         with open(self.csv_file, newline='') as f:
-            # TODO maybe change this to obey the header line in the CSV?
-            reader = csv.DictReader(f, csv_fieldorder, restval='')
-            first = True
-            csv_db = []
-            for row in reader:
-                if first: first = False
-                else: csv_db.append(row)
+            reader = csv.DictReader(f, restval='')
+            if 'filename' not in reader.fieldnames:
+                sys.exit('Error: hash file is missing a filename field')
+            csv_db = [row for row in reader]
             csv_db.sort(key = lambda x: x['filename'])
         
         error_occured = False
@@ -146,29 +149,37 @@ class Main:
         scan_idx = csv_idx = 0
         while scan_idx < len(self.scan_db) or csv_idx < len(csv_db):
             scan_file = self.scan_db[scan_idx] if scan_idx < len(self.scan_db) else None
-            csv_file  = csv_db[csv_idx] if csv_idx < len(csv_db) else None
+            csv_file = csv_db[csv_idx] if csv_idx < len(csv_db) else None
+            prev_csv_file = csv_db[csv_idx-1] if csv_idx >= 1 and csv_idx < len(csv_db) else None
             
             if scan_file == csv_file:
                 scan_idx += 1
                 csv_idx  += 1
                 continue
             
-            if csv_file == None or scan_file['filename'] < csv_file['filename']:
-                stderr('Mismatch: file is missing from the hash file: ' + \
-                    scan_file['filename'])
-                scan_idx += 1
-                continue
+            if csv_file != None:
+                if prev_csv_file != None and csv_file['filename'] == prev_csv_file['filename']:
+                    sys.exit('Error: hash file has duplicate entries for file: ' + csv_file['filename'])
             
-            if scan_file == None or csv_file['filename'] < scan_file['filename']:
-                stderr('Mismatch: file is missing from disk: ' + \
-                    csv_file['filename'])
-                csv_idx += 1
-                continue
+                if scan_file == None or csv_file['filename'] < scan_file['filename']:
+                    stderr('Mismatch: file is missing from disk: ' + \
+                        csv_file['filename'])
+                    csv_idx += 1
+                    continue
+            
+            if scan_file != None:
+                if csv_file == None or scan_file['filename'] < csv_file['filename']:
+                    stderr('Mismatch: file is missing from the hash file: ' + \
+                        scan_file['filename'])
+                    scan_idx += 1
+                    continue
             
             stderr('Mismatch: file properties have changed: ' + \
                 scan_file['filename'])
-            for field in csv_fieldorder:
-                if scan_file[field] != csv_file[field]:
+            for field in scan_file:
+                scan_val = scan_file.get(field, '')
+                csv_val = csv_file.get(field, '')
+                if scan_val != csv_val:
                     def tstamp(val):
                         try:
                             return '{}.{:09} ({})'.format(
@@ -177,24 +188,24 @@ class Main:
                         except (ValueError, OSError):
                             return 'invalid timestamp ({})'.format(val)
                     
-                    if csv_file[field] == '':  old_val = 'none'
-                    elif field == 'mtime':     old_val = tstamp(csv_file[field])
-                    else:                      old_val = csv_file[field]
+                    if csv_val == '':      old_val = 'none'
+                    elif field == 'mtime': old_val = tstamp(csv_val)
+                    else:                  old_val = csv_val
                     
-                    if scan_file[field] == '': new_val = 'none'
-                    elif field == 'mtime':     new_val = tstamp(scan_file[field])
-                    else:                      new_val = scan_file[field]
+                    if scan_val == '':     new_val = 'none'
+                    elif field == 'mtime': new_val = tstamp(scan_val)
+                    else:                  new_val = scan_val
                     
                     stderr('  {}: {} changed to {}'.format(
-                        csv_fieldnames[field], old_val, new_val))
+                        csv_humanfieldnames[field], old_val, new_val))
             scan_idx += 1
             csv_idx  += 1
         
         if error_occured:
             sys.exit(1)
         else:
-            print('Successfully compared {} files ({} bytes), no mismatches'.format(
-                len(csv_db), sum(int(csv_file['size']) for csv_file in csv_db)))
+            print(' * Successfully compared {} files ({} bytes), no mismatches'.format(
+                len(self.scan_db), self.scan_data_size))
 
 
 if __name__ == '__main__':
