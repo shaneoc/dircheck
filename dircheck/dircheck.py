@@ -1,5 +1,3 @@
-#!/usr/bin/python3
-
 import sys
 import os
 import argparse
@@ -235,6 +233,3 @@ class Main:
             scan_idx += 1
             csv_idx  += 1
 
-
-if __name__ == '__main__':
-    Main()
