@@ -9,5 +9,5 @@ setup(name='dircheck',
       author="Shane O'Connell",
       author_email='shane@oconnell.cc',
       packages=['dircheck'],
-      scripts=['bin/dircheck']
+      scripts=['scripts/dircheck']
 )
